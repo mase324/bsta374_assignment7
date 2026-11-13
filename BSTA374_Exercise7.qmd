@@ -1,7 +1,7 @@
 ---
 title: "Exercise 7 --- Bayesian Disease Mapping with R-INLA"
 subtitle: "BSTA 374 · Optional, extra credit: 10 points · Due Friday, November 13, 2026, 11:59 pm"
-author: "YOUR NAME · Lehigh University"
+author: "Maggie Sobaszek · Lehigh University"
 date: last-modified
 format:
   html:
@@ -186,6 +186,8 @@ table, how much would its SMR change with just one more death? And
 Philadelphia's? What does this say about the colours of small counties on the
 map?
 
+**Forest county is dark blue with an SMR of 0.33, but an SMR of 0.44 with just one more death. Philadelphia's SMR is 1.24 and with one more death is still the same. The small counties are unstable, because their populations are so small.** 
+
 ---
 
 ## Part B --- Posterior and credible interval, by hand (3 points)
@@ -266,6 +268,7 @@ ggplot(cur, aes(theta, density)) +
 **B1.** For which counties does the green curve sit close to the red prior,
 and for which close to the blue data? Which credible intervals are the widest?
 Use $w$ to explain why.
+**The posterior for Cameron and Forest counties are close to the prior because they are small counties where there is more shrinkage that happens because there's less weight on their own data. For Philadelphia, much more weight is on their own data, so in the graph their data is almost exactly the same as the posterior. Cameron and Forest have the widest credible intervals, because less of their posterior comes from their own numbers. For Cameron, only 22% and Forest, 31% of the posterior is from their own data.**
 
 ### How to compute the credible interval by hand
 
@@ -336,10 +339,27 @@ ggplot(d, aes(x, y)) +
   theme_minimal()
 ```
 
+
+```{r}
+#| label: by-hand-cameron
+#| code-fold: false
+
+fo     <- filter(three, NAME == "Cameron")
+a      <- 20 + fo$O                                  # borrowed + own deaths
+b      <- 20 + fo$E                                  # borrowed + own expected
+best   <- a / b                                      # step 1
+spread <- sqrt(a) / b                                # step 2
+round(c(a = a, b = b, best_guess = best, spread = spread), 2)
+
+round(best + c(-1.96, 1.96) * spread, 2)             # steps 3-4: by hand
+round(qgamma(c(0.025, 0.975), a, b), 2)              # exact: cut 2.5% each side
+```
+
 **B2.** Your turn, for **Cameron**, with a calculator (its $O$ and $E$ are in
-the table): $a$ = \_\_\_, $b$ = \_\_\_, best guess = \_\_\_, spread = \_\_\_,
-95% credible interval by hand from \_\_\_ to \_\_\_. Is it close to the exact
+the table): $a$ = **24.0**, $b$ = **25.57**, best guess = **0.94**, spread = **0.19**,
+95% credible interval by hand from **0.56** to **1.31**. Is it close to the exact
 interval (`CI_low` to `CI_high`) in the table?
+**It is close to the exact interval in the table.**
 
 ---
 
@@ -473,12 +493,13 @@ pa_covid |>
   knitr::kable(digits = 2)
 ```
 
-**D1.** Fill in, from the table: Montour's best guess is \_\_\_, with a 95%
-credible interval from \_\_\_ to \_\_\_. Montgomery's best guess is \_\_\_,
-from \_\_\_ to \_\_\_.
+**D1.** Fill in, from the table: Montour's best guess is **1.08**, with a 95%
+credible interval from **0.75 to 1.50**. Montgomery's best guess is **1.10**,
+from **1.04 to 1.17**.
 
 **D2.** Which interval contains 1, the state average? What does that mean for
 that county, and why is its interval so much wider?
+**Montour's interval, between 0.75 and 1.50, contains 1 and which means that it includes the state average, and so the relative risk for Montour could be the same as the state average. It has a much wider interval because it has less observed deaths compared to Montgomery.**  
 
 ### All 67 counties
 
@@ -519,6 +540,7 @@ pa_covid |>
 **D3.** Compare the small counties at the top with the large counties at the
 bottom. Whose bars are longer? Where are the counties whose dot moved far
 from its ×? Why?
+**The smaller counties at the top have longer bars because there's fewer deaths, so there's more uncertainty. Counties like Sullivan and Forest, where the dot is moved far from the x because there is shrinkage and their estimates are being pulled more toward the average because there's less original data from the counties. In large counties like Philadelphia and Allegheny, have more certainty in their estimates.** 
 
 ---
 
@@ -567,6 +589,8 @@ p_map + p_line
 **E1.** In Part B, borrowing from the state pulled Cameron **up**, toward 1.
 Where does INLA put it, and why?
 
+**The INLA best guess for Cameron is 0.67, where it is originally at 0.72. Borrowing from the state pulled it up, but INLA borrows from the SMR of the county's neighbors, and theirs are all lower than Cameron's SMR, so it pulled the SMR down.**
+
 ---
 
 ## Part F --- Where is the risk clearly higher? (1 point)
@@ -589,6 +613,8 @@ ggplot(pa_covid) +
 **F1.** In which parts of Pennsylvania are the red counties? Do the same parts
 stand out as in your SaTScan clusters of Exercise 6?
 
+**The red counties are mostly scattered throughout the south central and eastern portion of Pennsylvania. Some parts are similar from exercise six, like in the southeast and central regions. Cambria, Bedford, and Franklin and Huntingdon, Mifflin, and Juniata are the same in the center portion. Northumberland, Schuylkill, Luzerne, as well as Northampton, Bucks, Montgomery, Delaware and Philadelphia in the southeast.** 
+
 ---
 
 ## Part G --- Wrapping up (1 point)
@@ -596,6 +622,8 @@ stand out as in your SaTScan clusters of Exercise 6?
 **G1.** In two or three sentences, for a county health officer: when would you
 show the raw SMR map, and when the INLA results (best guess and credible
 intervals)? End with one sentence on whether and how you used AI tools.
+**For a county health officer, the SMR map is helpful to show observed vs expected. I think using the INLA results is helpful to show the risk and how it differs across counties which could be good to know where to focus public health resources or interventions. It's more helpful because the credible intervals can show the confidence that a county is below or above the state average. **
+**I didn't use AI in this, just looked back at class notes**
 
 ---
 
