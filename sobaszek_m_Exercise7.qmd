@@ -1,0 +1,650 @@
+---
+title: "Exercise 7 --- Bayesian Disease Mapping with R-INLA"
+subtitle: "BSTA 374 · Optional, extra credit: 10 points · Due Friday, November 13, 2026, 11:59 pm"
+author: "Maggie Sobaszek · Lehigh University"
+date: last-modified
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    toc-title: "On this page"
+    number-sections: false
+    code-fold: true
+    code-summary: "Show the code"
+    code-copy: true
+    highlight-style: github
+    embed-resources: true
+  pdf:
+    papersize: letter
+    geometry:
+      - margin=1in
+    toc: false
+    colorlinks: true
+    code-overflow: wrap
+execute:
+  warning: false
+  message: false
+  eval: true
+  echo: true
+---
+## What this exercise is
+
+This exercise is **optional, for extra credit: up to 10 points**.
+
+In Exercises 4 to 6 you mapped the **SMR** of 2020 COVID-19 deaths in
+Pennsylvania. Small counties had extreme SMRs that rested on very few deaths.
+Here you replace each SMR with a Bayesian **posterior**: a curve that says
+which values of the risk are plausible. From each curve we read two things:
+
+- the **best guess**, the centre of the curve;
+- the **95% credible interval**, the range that holds the middle 95% of the
+  curve: the true risk lies in it with 95% probability.
+
+You start from the SMR map, then build the posterior by hand, then with R-INLA
+for all 67 counties.
+
+All the code is provided, and you do not need to change any of it. Run the
+chunks from top to bottom with the green arrow at the top right of each chunk,
+and **look at the figures**.
+Most questions ask you to read a number off a figure or a table, or need one or
+two sentences; one asks you to compute a credible interval by hand, with a
+calculator.
+
+| Part | What you look at | Points |
+|---|---|---|
+| A | The SMR map, and how unstable it is in small counties | 1 |
+| B | Posterior and credible interval, by hand | 3 |
+| C | INLA does the same for all 67 counties (no question) | --- |
+| D | INLA's posteriors and credible intervals | 3 |
+| E | Borrowing from the neighbours | 1 |
+| F | Where is the risk clearly higher? | 1 |
+| G | Wrapping up | 1 |
+
+::: {.callout-important}
+## Before you start
+1. Install **INLA** once. It is not on CRAN, so run this in the RStudio
+   **Console** (it takes a few minutes):
+
+   ```r
+   install.packages("INLA",
+     repos = c(getOption("repos"), INLA = "https://inla.r-inla-download.org/R/stable"))
+   ```
+
+   Check it with `library(INLA)`. If INLA will not install on your laptop, use
+   a computer lab machine or [Posit Cloud](https://posit.cloud), and email me.
+2. Save this file as `LASTNAME_FI_Exercise7.qmd`, next to the `data/` folder
+   that holds `pa_covid_deaths_2020.csv` (as in Exercises 4--6).
+:::
+
+::: {.callout-important}
+## Submission
+Choose **either** option; both earn the same credit.
+
+- **Option 1:** upload `LASTNAME_FI_Exercise7.qmd`, with your answers typed
+  in, to Course Site. No rendering needed.
+- **Option 2:** render the page, publish it to GitHub Pages as for
+  Exercise 4, and submit the `.qmd` and the page URL.
+
+**Due Wednesday, November 11, 2026 at 11:59 pm.** Late work follows the policy
+in the syllabus.
+:::
+
+::: {.callout-tip}
+## If something does not run
+Restart R (*Session > Restart R*) and run the chunks from the top, in order.
+If `inla()` still stops with an error, email me the exact message --- or answer
+the questions you can; partial answers earn partial credit.
+:::
+
+---
+
+## Part A --- The SMR map (1 point)
+
+The first steps of Exercises 4 to 6: the join, the expected deaths and the
+SMR. Run this chunk first.
+
+```{r}
+#| label: setup
+
+library(sf)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(patchwork)
+library(spdep)
+library(INLA)
+library(tigris)
+options(tigris_use_cache = TRUE)
+
+covid <- read_csv("data/pa_covid_deaths_2020.csv", show_col_types = FALSE) |>
+  mutate(GEOID = sprintf("%05d", as.integer(FIPS)))      # text key, as in Ex. 4
+pa <- counties(state = "PA", cb = TRUE, year = 2020, progress_bar = FALSE)
+
+pa_covid <- pa |>
+  left_join(covid, by = "GEOID") |>
+  st_transform(5070) |>
+  arrange(GEOID)
+
+r <- sum(pa_covid$deaths_2020) / sum(pa_covid$Population)   # state rate
+pa_covid <- pa_covid |>
+  mutate(O   = deaths_2020,                                 # observed deaths
+         E   = r * Population,                              # expected deaths
+         SMR = O / E)
+
+# the SMR classes and colours of Exercise 4
+smr_breaks <- c(0, 0.5, 2/3, 0.9, 1/0.9, 1.5, 2, Inf)
+smr_labels <- c("< 0.50", "0.50-0.67", "0.67-0.90", "0.90-1.11",
+                "1.11-1.50", "1.50-2.00", "> 2.00")
+smr_fill   <- scale_fill_brewer(palette = "RdBu", direction = -1, drop = FALSE,
+                                name = NULL)
+```
+
+Now map the SMR, with the classes and colours of Exercise 4. The three least
+populated counties are outlined and labelled.
+
+```{r}
+#| label: smr-map
+#| code-fold: false
+#| fig-width: 8
+#| fig-height: 4.5
+
+tiny <- filter(pa_covid, NAME %in% c("Cameron", "Sullivan", "Forest"))   # fewest people
+
+ggplot(pa_covid) +
+  geom_sf(aes(fill = cut(SMR, smr_breaks, smr_labels)), colour = "white",
+          linewidth = 0.15) +
+  geom_sf(data = tiny, fill = NA, colour = "black", linewidth = 0.6) +   # outline
+  geom_sf_label(data = tiny, aes(label = NAME), size = 3) +
+  smr_fill +
+  labs(title = "SMR of COVID-19 deaths, Pennsylvania counties, 2020") +
+  theme_void()
+```
+
+How much would **one more death** change the SMR? The three least populated
+counties, and the three most populated:
+
+```{r}
+#| label: one-more-death
+
+six <- pa_covid |>
+  st_drop_geometry() |>
+  arrange(E) |>
+  slice(c(1:3, 65:67)) |>                            # 3 smallest, 3 largest
+  mutate(SMR_one_more = (O + 1) / E)                 # with one more death
+
+six |>
+  select(NAME, Population, O, E, SMR, SMR_one_more) |>
+  knitr::kable(digits = 2, format.args = list(big.mark = ","))
+```
+
+**A1.** On the map, what colour is Forest County, and what is its SMR? In the
+table, how much would its SMR change with just one more death? And
+Philadelphia's? What does this say about the colours of small counties on the
+map?
+
+**Forest county is dark blue with an SMR of 0.33, but an SMR of 0.44 with just one more death. Philadelphia's SMR is 1.24 and with one more death is still the same. The small counties are unstable, because their populations are so small.** 
+
+---
+
+## Part B --- Posterior and credible interval, by hand (3 points)
+
+In class, every restaurant borrowed 10 ratings from the area, and the family's
+well borrowed 10 tests from nearby wells. We do the same for counties: each
+county **borrows 20 expected deaths from the state, at the state rate**
+(SMR = 1). Its best guess is then
+
+$$
+\text{best guess} \;=\; w \times \text{SMR} + (1 - w) \times 1,
+\qquad w = \frac{E}{E + 20},
+$$
+
+where $w$ is how much we trust the county's own SMR, between 0 and 1.
+
+We look at three counties: **Cameron** and **Forest**, two of the three least
+populated counties of Pennsylvania, where almost nobody lives, and
+**Philadelphia**, the most populated.
+
+```{r}
+#| label: by-hand
+
+three <- pa_covid |>
+  st_drop_geometry() |>
+  filter(NAME %in% c("Cameron", "Forest", "Philadelphia")) |>
+  mutate(w          = E / (E + 20),                          # trust in own SMR
+         best_guess = (20 + O) / (20 + E),                   # 20 borrowed deaths
+         CI_low     = qgamma(0.025, 20 + O, 20 + E),         # 95% credible interval
+         CI_high    = qgamma(0.975, 20 + O, 20 + E)) |>
+  arrange(E)
+
+three |>
+  select(NAME, Population, O, E, SMR, w, best_guess, CI_low, CI_high) |>
+  knitr::kable(digits = 2, format.args = list(big.mark = ","))
+```
+
+The same thing as a picture. Red dotted: the **prior** (the 20 borrowed
+deaths). Blue: the county's own **data**. Green: the **posterior**, the two
+combined. The green shaded area is the **95% credible interval**, and the
+green dashed line the **best guess**.
+
+```{r}
+#| label: prior-data-posterior
+#| fig-width: 10
+#| fig-height: 3.6
+
+curves <- function(name, k = 20) {
+  x <- pa_covid[pa_covid$NAME == name, ]
+  tibble(theta     = seq(0.01, 2.5, by = 0.002),
+         Prior     = dgamma(theta, k, k),                  # 20 borrowed deaths
+         Data      = dgamma(theta, x$O + 1, x$E),          # own deaths only
+         Posterior = dgamma(theta, k + x$O, k + x$E),      # both together
+         county    = name)
+}
+
+cur <- bind_rows(lapply(three$NAME, curves)) |>
+  pivot_longer(c(Prior, Data, Posterior), names_to = "curve", values_to = "density") |>
+  mutate(curve = factor(curve, c("Prior", "Data", "Posterior")))
+shade <- cur |>
+  filter(curve == "Posterior") |>
+  left_join(select(three, county = NAME, CI_low, CI_high), by = "county") |>
+  filter(theta >= CI_low, theta <= CI_high)                # middle 95%
+
+ggplot(cur, aes(theta, density)) +
+  geom_area(data = shade, fill = "darkgreen", alpha = 0.25) +           # credible interval
+  geom_vline(data = rename(three, county = NAME), aes(xintercept = best_guess),
+             colour = "darkgreen", linetype = 2) +                     # best guess
+  geom_line(aes(colour = curve, linetype = curve), linewidth = 1) +
+  facet_wrap(~ factor(county, three$NAME), scales = "free_y") +        # small to large
+  scale_colour_manual(values = c(Prior = "red", Data = "blue", Posterior = "darkgreen")) +
+  scale_linetype_manual(values = c(Prior = 3, Data = 1, Posterior = 1)) +
+  labs(x = "Relative risk", y = NULL, colour = NULL, linetype = NULL) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+**B1.** For which counties does the green curve sit close to the red prior,
+and for which close to the blue data? Which credible intervals are the widest?
+Use $w$ to explain why.
+**The posterior for Cameron and Forest counties are close to the prior because they are small counties where there is more shrinkage that happens because there's less weight on their own data. For Philadelphia, much more weight is on their own data, so in the graph their data is almost exactly the same as the posterior. Cameron and Forest have the widest credible intervals, because less of their posterior comes from their own numbers. For Cameron, only 22% and Forest, 31% of the posterior is from their own data.**
+
+### How to compute the credible interval by hand
+
+The posterior is a curve whose total area is 1. The 95% credible interval
+**cuts 2.5% of the area off each side** and keeps the middle 95%. Here the
+posterior curve is set by two numbers:
+
+$$
+a = 20 + O \;\;\text{(borrowed + own deaths)}, \qquad
+b = 20 + E \;\;\text{(borrowed + own expected deaths)}.
+$$
+
+With a calculator, four steps give the interval:
+
+| Step | Formula |
+|---|---|
+| 1. best guess | $a / b$ |
+| 2. spread (standard deviation) | $\sqrt{a} \,/\, b$ |
+| 3. low end | best guess $- \, 1.96 \times$ spread |
+| 4. high end | best guess $+ \, 1.96 \times$ spread |
+
+This is the familiar "estimate $\pm$ 1.96 standard errors", applied to the
+posterior. It is an approximation: R's `qgamma()` cuts the 2.5% tails of the
+curve itself, which gives the exact interval of the table. Both, for Forest:
+
+```{r}
+#| label: by-hand-forest
+#| code-fold: false
+
+fo     <- filter(three, NAME == "Forest")
+a      <- 20 + fo$O                                  # borrowed + own deaths
+b      <- 20 + fo$E                                  # borrowed + own expected
+best   <- a / b                                      # step 1
+spread <- sqrt(a) / b                                # step 2
+round(c(a = a, b = b, best_guess = best, spread = spread), 2)
+
+round(best + c(-1.96, 1.96) * spread, 2)             # steps 3-4: by hand
+round(qgamma(c(0.025, 0.975), a, b), 2)              # exact: cut 2.5% each side
+```
+
+The same two intervals on Forest's posterior curve. Grey: the 2.5% cut off on
+each side. Green: the middle 95%, the exact interval. Black bar below: the
+interval by hand.
+
+```{r}
+#| label: forest-interval
+#| fig-width: 7
+#| fig-height: 3.8
+
+ex   <- qgamma(c(0.025, 0.975), a, b)                # exact interval
+hand <- best + c(-1.96, 1.96) * spread               # by hand
+d    <- tibble(x = seq(0.2, 1.6, by = 0.002), y = dgamma(x, a, b))
+top  <- max(d$y)
+
+ggplot(d, aes(x, y)) +
+  geom_area(data = filter(d, x <= ex[1]), fill = "grey70") +                # lower 2.5%
+  geom_area(data = filter(d, x >= ex[2]), fill = "grey70") +                # upper 2.5%
+  geom_area(data = filter(d, x >= ex[1], x <= ex[2]), fill = "darkgreen", alpha = 0.25) +
+  geom_line(colour = "darkgreen", linewidth = 1) +
+  geom_vline(xintercept = best, colour = "darkgreen", linetype = 2) +        # best guess
+  annotate("text", x = c(ex[1] - 0.07, best + 0.12, ex[2] + 0.07),
+           y = top * c(0.12, 0.45, 0.12), label = c("2.5%", "95%", "2.5%")) +
+  annotate("segment", x = hand[1], xend = hand[2], y = -0.12 * top,
+           yend = -0.12 * top, linewidth = 1.2) +                           # by hand
+  annotate("text", x = best, y = -0.22 * top, size = 3.5,
+           label = "by hand: best guess +/- 1.96 x spread") +
+  labs(x = "Relative risk, Forest County", y = NULL) +
+  theme_minimal()
+```
+
+
+```{r}
+#| label: by-hand-cameron
+#| code-fold: false
+
+fo     <- filter(three, NAME == "Cameron")
+a      <- 20 + fo$O                                  # borrowed + own deaths
+b      <- 20 + fo$E                                  # borrowed + own expected
+best   <- a / b                                      # step 1
+spread <- sqrt(a) / b                                # step 2
+round(c(a = a, b = b, best_guess = best, spread = spread), 2)
+
+round(best + c(-1.96, 1.96) * spread, 2)             # steps 3-4: by hand
+round(qgamma(c(0.025, 0.975), a, b), 2)              # exact: cut 2.5% each side
+```
+
+**B2.** Your turn, for **Cameron**, with a calculator (its $O$ and $E$ are in
+the table): $a$ = **24.0**, $b$ = **25.57**, best guess = **0.94**, spread = **0.19**,
+95% credible interval by hand from **0.56** to **1.31**. Is it close to the exact
+interval (`CI_low` to `CI_high`) in the table?
+**It is close to the exact interval in the table.**
+
+---
+
+## Part C --- INLA does the same for all 67 counties (no question)
+
+In Part B, **you** chose to borrow 20 deaths, and every county borrowed from
+the **state**. INLA keeps the idea and changes two things:
+
+1. the **data decide** how much each county borrows;
+2. each county borrows mostly from its **neighbours**, as the well borrowed
+   from nearby wells. This is the **BYM2** model (Moraga §5.3).
+
+```{r}
+#| label: inla-diagram
+#| echo: false
+#| fig-width: 9
+#| fig-height: 2.8
+
+box <- tibble(
+  x     = c(0, 0, 0, 2.7, 5.1, 7.6, 7.6),
+  y     = c(2, 1, 0, 1, 1, 1.6, 0.4),
+  w     = c(2.3, 2.3, 2.3, 1.1, 2.3, 2.0, 2.0),
+  fill  = c(rep("#DCE9F5", 3), "#F4CCCC", "#D9EAD3", "#D9EAD3", "#D9EAD3"),
+  label = c("The county's\nown deaths", "Its neighbours'\ndeaths",
+            "How different the\n67 counties are", "INLA",
+            "One posterior curve\nper county", "Best guess",
+            "95% credible\ninterval"))
+arr <- tibble(x    = c(1.15, 1.15, 1.15, 3.25, 6.25, 6.25),
+              y    = c(2, 1, 0, 1, 1, 1),
+              xend = c(2.15, 2.15, 2.15, 3.95, 6.6, 6.6),
+              yend = c(1, 1, 1, 1, 1.6, 0.4))
+
+ggplot() +
+  geom_segment(data = arr, aes(x, y, xend = xend, yend = yend), colour = "grey40",
+               arrow = arrow(length = unit(0.2, "cm"), type = "closed")) +
+  geom_tile(data = box, aes(x, y, width = w, height = 0.75, fill = fill), colour = "grey40") +
+  geom_text(data = box, aes(x, y, label = label), size = 3.6) +
+  scale_fill_identity() +
+  theme_void()
+```
+
+The INLA code is the one chunk worth reading:
+
+| Piece of the code | In words |
+|---|---|
+| `O ~ 1` | model the observed deaths around one overall level of risk |
+| `f(id, model = "bym2", graph = g)` | each county gets its own risk, pulled toward its neighbours (listed in `g`) |
+| `family = "poisson", E = E` | deaths are counts, compared with expected deaths, so results read like an SMR |
+| `control...` | only asks INLA to keep the results we need |
+
+```{r}
+#| label: inla
+#| code-fold: false
+
+nb <- poly2nb(pa_covid, queen = TRUE)                # queen neighbours
+nb2INLA("pa.adj", nb)                                # write them for INLA
+g  <- inla.read.graph("pa.adj")
+
+dat <- st_drop_geometry(pa_covid) |>
+  mutate(id = row_number())                          # one index per county
+
+m <- inla(O ~ 1 + f(id, model = "bym2", graph = g),  # borrow from neighbours
+          family = "poisson", E = E, data = dat,     # deaths vs expected deaths
+          control.predictor = list(compute = TRUE),
+          control.compute   = list(return.marginals.predictor = TRUE))
+
+res <- m$summary.fitted.values                       # one row per county
+pa_covid$RR <- res$mean                              # best guess
+pa_covid$LL <- res$`0.025quant`                      # 95% credible interval, low
+pa_covid$UL <- res$`0.975quant`                      # 95% credible interval, high
+```
+
+The raw SMR and INLA's best guess, with the colours of Exercise 4:
+
+```{r}
+#| label: two-maps
+#| fig-width: 10
+#| fig-height: 3.8
+
+pa_covid |>
+  select(SMR, RR) |>
+  pivot_longer(c(SMR, RR), names_to = "map", values_to = "value") |>
+  mutate(map   = factor(map, c("SMR", "RR"), c("Raw SMR", "INLA best guess")),
+         class = cut(value, smr_breaks, smr_labels)) |>
+  ggplot() +
+  geom_sf(aes(fill = class), colour = "white", linewidth = 0.15) +
+  facet_wrap(~ map) +
+  smr_fill +
+  theme_void() +
+  theme(legend.position = "bottom")
+```
+
+---
+
+## Part D --- INLA's posteriors and credible intervals (3 points)
+
+### Two counties, two posterior curves
+
+Montour and Montgomery have the **same raw SMR**. Here are INLA's posterior
+curves for both, on the same horizontal axis. Green shaded: the 95% credible
+interval. Green dashed: the best guess. Black: the state average, 1.
+
+```{r}
+#| label: two-curves
+#| fig-width: 9
+#| fig-height: 3.5
+
+post_curve <- function(name) {
+  i  <- which(pa_covid$NAME == name)
+  cv <- inla.smarginal(m$marginals.fitted.values[[i]])   # INLA's curve
+  data.frame(county = paste0(name, " (", round(pa_covid$E[i]), " expected deaths)"),
+             x = cv$x, y = cv$y,
+             RR = pa_covid$RR[i], LL = pa_covid$LL[i], UL = pa_covid$UL[i])
+}
+
+cur <- bind_rows(post_curve("Montour"), post_curve("Montgomery"))
+
+ggplot(cur, aes(x, y)) +
+  geom_area(data = filter(cur, x >= LL, x <= UL), fill = "darkgreen", alpha = 0.25) +
+  geom_vline(aes(xintercept = RR), colour = "darkgreen", linetype = 2) +   # best guess
+  geom_vline(xintercept = 1) +                                           # state average
+  geom_line(colour = "darkgreen", linewidth = 1) +
+  facet_wrap(~ county, scales = "free_y") +
+  labs(x = "Relative risk", y = NULL) +
+  theme_minimal()
+
+pa_covid |>
+  st_drop_geometry() |>
+  filter(NAME %in% c("Montour", "Montgomery")) |>
+  select(NAME, O, E, SMR, RR, LL, UL) |>
+  knitr::kable(digits = 2)
+```
+
+**D1.** Fill in, from the table: Montour's best guess is **1.08**, with a 95%
+credible interval from **0.75 to 1.50**. Montgomery's best guess is **1.10**,
+from **1.04 to 1.17**.
+
+**D2.** Which interval contains 1, the state average? What does that mean for
+that county, and why is its interval so much wider?
+**Montour's interval, between 0.75 and 1.50, contains 1 and which means that it includes the state average, and so the relative risk for Montour could be the same as the state average. It has a much wider interval because it has less observed deaths compared to Montgomery.**  
+
+### All 67 counties
+
+Each row is one county's posterior curve seen from above: the bar is its 95%
+credible interval, the dot its best guess, and the × its raw SMR. Small
+counties are at the top. Red: the whole interval is above 1. Blue: the whole
+interval is below 1. Grey: the interval contains 1.
+
+```{r}
+#| label: all-intervals
+#| fig-width: 8
+#| fig-height: 10
+
+ci_cols <- c("Entire interval above 1" = "#B2182B",
+             "Interval contains 1"     = "grey55",
+             "Entire interval below 1" = "#2166AC")
+
+pa_covid <- pa_covid |>
+  mutate(ci_class = factor(case_when(LL > 1 ~ names(ci_cols)[1],
+                                     UL < 1 ~ names(ci_cols)[3],
+                                     TRUE   ~ names(ci_cols)[2]), names(ci_cols)))
+
+pa_covid |>
+  st_drop_geometry() |>
+  mutate(county = reorder(paste0(NAME, " (E = ", round(E), ")"), -E)) |>   # small on top
+  ggplot(aes(y = county)) +
+  geom_vline(xintercept = 1, linetype = 2) +                               # state average
+  geom_linerange(aes(xmin = LL, xmax = UL, colour = ci_class), linewidth = 1.2) +
+  geom_point(aes(x = RR, colour = ci_class), size = 2) +
+  geom_point(aes(x = SMR, shape = "Raw SMR"), size = 2) +
+  scale_colour_manual(values = ci_cols, drop = FALSE, name = NULL) +
+  scale_shape_manual(values = c("Raw SMR" = 4), name = NULL) +
+  labs(x = "Relative risk", y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.box = "vertical")
+```
+
+**D3.** Compare the small counties at the top with the large counties at the
+bottom. Whose bars are longer? Where are the counties whose dot moved far
+from its ×? Why?
+**The smaller counties at the top have longer bars because there's fewer deaths, so there's more uncertainty. Counties like Sullivan and Forest, where the dot is moved far from the x because there is shrinkage and their estimates are being pulled more toward the average because there's less original data from the counties. In large counties like Philadelphia and Allegheny, have more certainty in their estimates.** 
+
+---
+
+## Part E --- Borrowing from the neighbours (1 point)
+
+Cameron, outlined in black, and its neighbours. Left: their raw SMRs. Right:
+where INLA puts Cameron, with its 95% credible interval, compared with its own
+SMR, its neighbours and the state average.
+
+```{r}
+#| label: cameron
+#| fig-width: 10
+#| fig-height: 4
+
+i    <- which(pa_covid$NAME == "Cameron")
+hood <- pa_covid[c(i, nb[[i]]), ]                    # Cameron, then its neighbours
+
+p_map <- ggplot(hood) +
+  geom_sf(aes(fill = cut(SMR, smr_breaks, smr_labels)), colour = "white") +
+  geom_sf(data = hood[1, ], fill = NA, colour = "black", linewidth = 1) +   # Cameron
+  geom_sf_text(aes(label = paste0(NAME, "\n", sprintf("%.2f", SMR))), size = 3) +
+  smr_fill +
+  labs(title = "Raw SMRs") +
+  theme_void() +
+  theme(legend.position = "none")
+
+rows <- c("Neighbours' SMRs", "State average", "Cameron, raw SMR",
+          "Cameron, INLA best guess")
+pts <- tibble(what  = factor(c(rep(rows[1], nrow(hood) - 1), rows[2:4]), rev(rows)),
+              value = c(hood$SMR[-1], 1, hood$SMR[1], hood$RR[1]))
+bar <- tibble(what = factor(rows[4], rev(rows)), lo = hood$LL[1], hi = hood$UL[1])
+
+p_line <- ggplot(pts, aes(value, what, colour = what)) +
+  geom_vline(xintercept = 1, linetype = 2, colour = "grey50") +
+  geom_linerange(data = bar, aes(xmin = lo, xmax = hi, y = what), inherit.aes = FALSE,
+                 colour = "darkgreen", linewidth = 1.2) +                    # credible interval
+  geom_point(size = 3.5) +
+  scale_colour_manual(values = c("grey40", "black", "blue", "darkgreen"),
+                      breaks = rows, guide = "none") +
+  labs(title = "Where does Cameron land?", x = "Relative risk", y = NULL) +
+  theme_minimal()
+
+p_map + p_line
+```
+
+**E1.** In Part B, borrowing from the state pulled Cameron **up**, toward 1.
+Where does INLA put it, and why?
+
+**The INLA best guess for Cameron is 0.67, where it is originally at 0.72. Borrowing from the state pulled it up, but INLA borrows from the SMR of the county's neighbors, and theirs are all lower than Cameron's SMR, so it pulled the SMR down.**
+
+---
+
+## Part F --- Where is the risk clearly higher? (1 point)
+
+The colours of the plot above, on the map: red counties have their whole 95%
+credible interval above 1.
+
+```{r}
+#| label: ci-map
+#| fig-width: 7
+#| fig-height: 4
+
+ggplot(pa_covid) +
+  geom_sf(aes(fill = ci_class), colour = "white", linewidth = 0.15) +
+  scale_fill_manual(values = ci_cols, drop = FALSE, name = NULL) +
+  labs(title = "Is the 95% credible interval above or below the state average?") +
+  theme_void()
+```
+
+**F1.** In which parts of Pennsylvania are the red counties? Do the same parts
+stand out as in your SaTScan clusters of Exercise 6?
+
+**The red counties are mostly scattered throughout the south central and eastern portion of Pennsylvania. Some parts are similar from exercise six, like in the southeast and central regions. Cambria, Bedford, and Franklin and Huntingdon, Mifflin, and Juniata are the same in the center portion. Northumberland, Schuylkill, Luzerne, as well as Northampton, Bucks, Montgomery, Delaware and Philadelphia in the southeast.** 
+
+---
+
+## Part G --- Wrapping up (1 point)
+
+**G1.** In two or three sentences, for a county health officer: when would you
+show the raw SMR map, and when the INLA results (best guess and credible
+intervals)? End with one sentence on whether and how you used AI tools.
+**For a county health officer, the SMR map is helpful to show observed vs expected. I think using the INLA results is helpful to show the risk and how it differs across counties which could be good to know where to focus public health resources or interventions. It's more helpful because the credible intervals can show the confidence that a county is below or above the state average. **
+**I didn't use AI in this, just looked back at class notes**
+
+---
+
+## Points
+
+| Part | What earns the points | Points |
+|---|---|---|
+| A | The SMR map; one more death in a small county | 1 |
+| B | Prior versus data, explained with $w$; a credible interval computed by hand | 3 |
+| D | Two intervals read off; same SMR, different certainty; small versus large counties | 3 |
+| E | Borrowing from the neighbours | 1 |
+| F | Where the risk is clearly higher | 1 |
+| G | When to show which map; AI use note | 1 |
+| | **Total (extra credit)** | **10** |
+
+Clear, simple sentences are what earn the points; length does not.
+
+## References {.unnumbered}
+
+Moraga, P. (2019). *Geospatial health data: Modeling and visualization with
+R-INLA and Shiny*. Chapman & Hall/CRC, Ch. 3--5.
+
+Riebler, A., Sørbye, S. H., Simpson, D., & Rue, H. (2016). An intuitive
+Bayesian spatial model for disease mapping that accounts for scaling.
+*Statistical Methods in Medical Research*, 25(4), 1145--1165.
